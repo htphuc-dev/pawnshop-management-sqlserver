@@ -861,10 +861,12 @@ Như đã phân tích ở phần trước,  sẽ sử dụng **Inline Table-Valu
 Đây là một kỹ thuật phù hợp vì nó cho phép gọi hàm này bên trong các câu lệnh `SELECT` hoặc
 `JOIN` ở Event 4 (Truy vấn nợ xấu) mà không ảnh hưởng đến hiệu năng của cơ sở dữ liệu.
 
-Tuy nhiên, do quy tắc của Inline TVF là **không được sử dụng lệnh rẽ nhánh `IF...ELSE`
+Do quy tắc của Inline TVF là **không được sử dụng lệnh rẽ nhánh `IF...ELSE`
 hay khai báo biến `DECLARE`** — toàn bộ logic phải nằm gọn trong một câu `SELECT` —
 nên chúng em sẽ áp dụng kỹ thuật **CTE (Common Table Expression — mệnh đề `WITH`)**
 để chia nhỏ công thức tính toán thành từng bước một cách rõ ràng và có cấu trúc.
+
+Thay vì viết rời fn_CalcMoneyTransaction để tính từng giao dịch gây chậm hệ thống, em đã thiết kế CTE trong hàm fn_CalcMoneyContract để tự động tổng hợp số dư từ bảng LichSuGiaoDich mới nhất. Điều này giúp tối ưu truy vấn (Chỉ cần gọi 1 hàm duy nhất) mà vẫn đảm bảo tính toán thời gian thực."
 
 ---
 
