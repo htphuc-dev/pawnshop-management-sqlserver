@@ -8,18 +8,7 @@ Pawnshop management database using SQL Server and T-SQL
 
 ## 📋 Mục lục
 
-1. [Mô tả bài toán & Giả định hệ thống](#1-mô-tả-bài-toán--giả-định-hệ-thống)
-2. [Thiết kế ERD](#2-thiết-kế-erd)
-3. [Chi tiết các bảng (Schema)](#3-chi-tiết-các-bảng-schema)
-4. [CHECK Constraints đầy đủ](#4-check-constraints-đầy-đủ)
-5. [Chiến lược FK — ON DELETE / ON UPDATE](#5-chiến-lược-fk--on-delete--on-update)
-6. [Quy tắc nghiệp vụ & Vòng đời trạng thái](#6-quy-tắc-nghiệp-vụ--vòng-đời-trạng-thái)
-7. [Thuật toán tính lãi](#7-thuật-toán-tính-lãi)
-8. [Tối ưu truy vấn bằng INDEX](#8-tối-ưu-truy-vấn-bằng-index)
-9. [Transaction Consistency](#9-transaction-consistency)
-10. [Giải thích thiết kế](#10-giải-thích-thiết-kế)
-11. [Chuẩn hóa 3NF](#11-chuẩn-hóa-3nf)
-12. [Hướng dẫn chạy Script](#12-hướng-dẫn-chạy-script)
+
 
 ---
 
@@ -374,37 +363,13 @@ Nếu X > Deadline1:
        + LãiPhạt(Deadline1 → X)         ← lãi phạt trên gốc mới
 ```
 
----
 
-### Pseudocode T-SQL (`fn_CalcMoneyContract`)
-
-```sql
--- Bước 1: Tính lãi đơn đầy đủ đến Deadline1
-SET @NgayDenDL1 = DATEDIFF(DAY, @NgayVay, @Deadline1)
-SET @LaiDon     = @SoTienVayGoc * 0.005 * @NgayDenDL1
-
--- Bước 2: Phân nhánh theo TargetDate
-IF @TargetDate <= @Deadline1
-BEGIN
-    -- Chưa qua deadline: chỉ tính lãi đơn đến TargetDate
-    SET @SoNgay = DATEDIFF(DAY, @NgayVay, @TargetDate)
-    RETURN @SoTienVayGoc + (@SoTienVayGoc * 0.005 * @SoNgay)
-END
-ELSE
-BEGIN
-    -- Đã quá hạn: lãi phạt trên gốc mới
-    SET @GocMoi   = @SoTienVayGoc + @LaiDon
-    SET @NgayPhat = DATEDIFF(DAY, @Deadline1, @TargetDate)
-    SET @LaiPhat  = @GocMoi * 0.005 * @NgayPhat
-    RETURN @SoTienVayGoc + @LaiDon + @LaiPhat
-END
-```
 
 ---
 
 ## 8. Tối ưu truy vấn bằng INDEX
 
-Phần này thể hiện **tư duy thiết kế thực tế** — biết bảng sẽ bị query theo pattern nào, tạo index phù hợp.
+Phần này để biết bảng sẽ bị query theo pattern nào, tạo index phù hợp.
 
 ### Index kết hợp cho truy vấn nợ xấu (Event 4)
 
@@ -572,7 +537,7 @@ WHERE HopDongID = @HopDongID
 
 ---
 
-## 12. Hướng dẫn chạy Script
+## 12.  Chạy Script test cơ bản
 
 ### Yêu cầu
 - SQL Server 2022 trở lên (hoặc Azure SQL)
@@ -1302,4 +1267,419 @@ EXEC sp_XuLyTraNo
     @NhanVienID     = 1,
     @GhiChu         = N'Trả nợ';
 ```
-*Sinh viên thực hiện — Lớp 59KMT*
+---
+# Phần 5 — Event 4: Truy vấn danh sách nợ xấu (Nợ khó đòi)
+
+**Yêu cầu của phần này:**  
+Xuất ra danh sách các khách hàng đã quá hạn **Deadline 1** nhưng chưa thanh toán xong. Báo cáo cần hiển thị số nợ hiện tại và dự phóng **số nợ sau 1 tháng nữa**.
+
+Vì hàm **`fn_CalcMoneyContract`** đã được thiết kế dưới dạng **Inline Table-Valued Function (TVF)**, việc tạo báo cáo này trở nên rất thanh thoát nhờ kỹ thuật **CROSS APPLY**.  
+CROSS APPLY hoạt động giống như một vòng lặp JOIN, cho phép truyền từng mã hợp đồng vào hàm tính tiền để lấy kết quả trả về.
+
+---
+<img width="1916" height="1078" alt="Screenshot 2026-05-12 003400" src="https://github.com/user-attachments/assets/7fee4b86-224e-41ea-9ddd-5a276a360c1c" />
+
+---
+
+## Script T-SQL tạo hàm báo cáo nợ xấu
+
+```sql
+CREATE FUNCTION fn_DanhSachNoXau
+(
+    @NgayTarget DATE
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT 
+        KH.HoTen AS TenKhachHang,
+        KH.SoDienThoai,
+        HD.SoTienVayGoc,
+        
+        -- Tính số ngày đã quá hạn so với Deadline1
+        DATEDIFF(DAY, HD.Deadline1, @NgayTarget) AS SoNgayQuaHan,
+        
+        -- Lấy tổng nợ từ hàm tính toán cho ngày hiện tại (@NgayTarget)
+        CongNoHienTai.TongTienPhaiTra AS TongNoHienTai,
+        
+        -- Lấy tổng nợ từ hàm tính toán cho 1 tháng sau
+        CongNoTuongLai.TongTienPhaiTra AS TongNoSau1Thang
+        
+    FROM HopDong HD
+    JOIN KhachHang KH ON HD.KhachHangID = KH.KhachHangID
+    
+    -- CROSS APPLY 1: Tính nợ cho ngày báo cáo
+    CROSS APPLY dbo.fn_CalcMoneyContract(HD.HopDongID, @NgayTarget) CongNoHienTai
+    
+    -- CROSS APPLY 2: Tính nợ dự phóng 1 tháng sau
+    CROSS APPLY dbo.fn_CalcMoneyContract(HD.HopDongID, DATEADD(MONTH, 1, @NgayTarget)) CongNoTuongLai
+    
+    WHERE 
+        -- Chỉ lấy các hợp đồng đã vượt quá Deadline 1
+        HD.Deadline1 < @NgayTarget 
+        
+        -- Bỏ qua các hợp đồng đã đóng
+        AND HD.TrangThai IN (N'Đang vay', N'Đang trả góp', N'Quá hạn (nợ xấu)')
+);
+GO
+```
+Giải thích các điểm kỹ thuật cốt lõi
+1. Sức mạnh của CROSS APPLY
+Thông thường, lệnh JOIN chỉ kết nối hai bảng vật lý với nhau. Tuy nhiên, khi cần kết nối một bảng (HopDong) với một hàm (fn_CalcMoneyContract) mà hàm lại nhận tham số là cột từ bảng (HD.HopDongID), thì JOIN thông thường sẽ báo lỗi.
+CROSS APPLY được sinh ra chính để giải quyết vấn đề này. Nó duyệt qua từng dòng của bảng HopDong và gọi hàm tính toán tương ứng cho từng dòng.
+2. Hàm DATEADD cho dự phóng tài chính
+Ở CROSS APPLY thứ hai, thay vì phải viết lại toàn bộ logic tính toán phức tạp cho tháng sau, chỉ cần gọi lại hàm cũ và sử dụng:
+SQLDATEADD(MONTH, 1, @NgayTarget)
+Điều này giúp code rất sạch (Clean Code) và tuân thủ nguyên tắc DRY (Don’t Repeat Yourself).
+3. Khả năng tái sử dụng với tham số @NgayTarget
+Hàm được thiết kế nhận tham số @NgayTarget thay vì hard-code GETDATE(). Nhờ đó, hàm cực kỳ linh hoạt:
+
+Có thể xem nợ xấu của ngày hôm nay.
+Có thể xem lại nợ xấu của bất kỳ ngày nào trong quá khứ.
+Hỗ trợ tốt cho báo cáo lịch sử và kiểm thử.
+
+Cách test thực tế
+Hợp đồng số 4 có Deadline1 là 2026-06-11.
+Nếu chạy báo cáo vào tháng 5/2026, hợp đồng này sẽ không xuất hiện vì chưa đến hạn.
+Để kiểm tra hàm hoạt động đúng, hãy giả lập chạy báo cáo vào ngày 20/06/2026 (lúc này đã quá hạn 9 ngày).
+Script test
+SQL-- Chạy báo cáo Nợ xấu giả lập vào ngày 2026-06-20
+-- Sắp xếp những người nợ lâu nhất lên đầu
+```sql
+SELECT * 
+FROM fn_DanhSachNoXau('2026-06-20')
+ORDER BY SoNgayQuaHan DESC;
+```
+
+---
+<img width="1860" height="913" alt="Screenshot 2026-05-12 003451" src="https://github.com/user-attachments/assets/6e2e6db3-c2b7-4ed7-96ce-d57c18dc0b14" />
+
+---
+# Phần 6 — Event 5: Tự động hóa trạng thái & Xử lý nghiệp vụ bổ sung
+
+Phần này chịu trách nhiệm quản lý vòng đời cuối cùng của hợp đồng (**Quá hạn**, **Thanh lý**) và cung cấp nghiệp vụ **"Đảo nợ" (Gia hạn)**.  
+
+Để hệ thống vận hành trơn tru và tối ưu hiệu năng với dữ liệu lớn, kiến trúc được chia thành **4 module** rõ rệt:
+
+## 1. Tối ưu hóa truy vấn bằng Composite Index
+
+Cả chức năng báo cáo nợ xấu (Event 4) và chức năng quét tự động (Event 5) đều thường xuyên lọc dữ liệu trên bảng `HopDong` dựa vào **Trạng thái** và các mốc **Deadline**.  
+
+Việc tạo **Composite Index** giúp SQL Server sử dụng **Index Seek** thay vì **Full Table Scan**, nâng cao đáng kể tốc độ truy vấn.
+
+```sql
+CREATE NONCLUSTERED INDEX IX_HopDong_TrangThai_Deadlines 
+ON HopDong(TrangThai, Deadline1, Deadline2);
+GO
+```
+2. Event 5.1 — Tự động hóa theo thời gian (Job Quét hệ thống)
+Trong thực tế, Trigger không thể tự chạy theo lịch. Cơ chế chuẩn là sử dụng SQL Server Agent Job để gọi Stored Procedure này vào lúc 00:00:00 hàng ngày.
+Nhiệm vụ chính:
+
+Quét hợp đồng quá Deadline 1 → Chuyển thành Quá hạn (nợ xấu).
+Quét hợp đồng quá Deadline 2 → Đánh dấu tài sản Sẵn sàng thanh lý.
+Sử dụng OUTPUT để ghi Audit Log hàng loạt, tránh dùng Cursor gây chậm hệ thống.
+
+---
+<img width="1907" height="1072" alt="image" src="https://github.com/user-attachments/assets/4343a7d8-8af5-4990-a28b-0b8f10b3c729" />
+
+---
+```SQL
+CREATE PROCEDURE sp_QuetTrangThaiNgayMoi
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Tạo bảng tạm để hứng log trạng thái thay đổi
+        DECLARE @BangTamLog TABLE (
+            HopDongID INT, 
+            TrangThaiCu NVARCHAR(50), 
+            TrangThaiMoi NVARCHAR(50)
+        );
+
+        -- [QUY TẮC 1]: Chuyển hợp đồng sang "Quá hạn"
+        UPDATE HopDong
+        SET TrangThai = N'Quá hạn (nợ xấu)', 
+            UpdatedAt = GETDATE()
+        OUTPUT inserted.HopDongID, deleted.TrangThai, inserted.TrangThai 
+        INTO @BangTamLog
+        WHERE TrangThai = N'Đang vay' 
+          AND Deadline1 < CAST(GETDATE() AS DATE);
+
+        -- Ghi log cho Quy tắc 1
+        INSERT INTO LichSuTrangThai (HopDongID, TrangThaiCu, TrangThaiMoi, NhanVienID, GhiChu)
+        SELECT HopDongID, TrangThaiCu, TrangThaiMoi, NULL, N'Hệ thống auto: Quá Deadline 1'
+        FROM @BangTamLog;
+
+        DELETE FROM @BangTamLog; -- Reset bảng tạm
+
+        -- [QUY TẮC 2]: Đánh dấu Tài Sản "Sẵn sàng thanh lý"
+        UPDATE TaiSan
+        SET TrangThai = N'Sẵn sàng thanh lý'
+        WHERE TrangThai = N'Đang cầm cố'
+          AND HopDongID IN (
+              SELECT HopDongID 
+              FROM HopDong 
+              WHERE TrangThai = N'Quá hạn (nợ xấu)' 
+                AND Deadline2 < CAST(GETDATE() AS DATE)
+          );
+
+        COMMIT TRANSACTION;
+        SELECT N'Hoàn tất quét hệ thống!' AS ThongBao;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END;
+GO
+```
+
+3. Event 5.2 — Tự động hóa theo Dữ liệu (Trigger Thanh lý)
+Trigger này sẽ tự động cập nhật trạng thái tài sản khi nhân viên chuyển hợp đồng sang trạng thái "Đã thanh lý tài sản".
+
+---
+<img width="1911" height="1075" alt="Screenshot 2026-05-12 010029" src="https://github.com/user-attachments/assets/239eae94-e23c-4d59-a9c6-effd36a70b1c" />
+
+---
+
+```SQL
+CREATE TRIGGER trg_HopDong_ThanhLy 
+ON HopDong 
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Tối ưu: Chỉ chạy logic nếu cột TrangThai thực sự bị UPDATE
+    IF UPDATE(TrangThai)
+    BEGIN
+        UPDATE TaiSan
+        SET TrangThai = N'Đã bán thanh lý'
+        FROM TaiSan TS
+        INNER JOIN inserted i ON TS.HopDongID = i.HopDongID
+        INNER JOIN deleted d ON i.HopDongID = d.HopDongID
+        WHERE i.TrangThai = N'Đã thanh lý tài sản' 
+          AND d.TrangThai <> N'Đã thanh lý tài sản' 
+          AND TS.TrangThai IN (N'Đang cầm cố', N'Sẵn sàng thanh lý');
+    END
+END;
+GO
+```
+4. Sự kiện bổ sung — Gia hạn hợp đồng (Đảo nợ)
+Thủ tục này cho phép khách hàng dời Deadline để tránh lãi phạt, với các quy tắc nghiệp vụ chặt chẽ:
+
+Chặn gian lận: Không cho gia hạn nếu hợp đồng đã thanh toán xong hoặc tài sản đã thanh lý.
+Nguyên tắc tài chính: Khách phải trả đủ 100% tiền lãi phát sinh đến ngày gia hạn. Tiền gốc giữ nguyên (hoặc giảm nếu trả dư).
+Cứu tài sản: Reset tài sản đang ở trạng thái Sẵn sàng thanh lý về Đang cầm cố.
+
+---
+<img width="1910" height="1071" alt="Screenshot 2026-05-12 010237" src="https://github.com/user-attachments/assets/1951e39b-eab0-43a0-8f5b-0a20d6e5504d" />
+
+---
+
+```SQL
+CREATE PROCEDURE sp_GiaHanHopDong 
+    @HopDongID INT,
+    @SoTienKhachTra DECIMAL(18,0),
+    @Deadline1_Moi DATE,
+    @Deadline2_Moi DATE,
+    @NhanVienID INT,
+    @GhiChu NVARCHAR(500)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        -- [BƯỚC 1]: KIỂM TRA ĐIỀU KIỆN GIA HẠN
+        DECLARE @TrangThaiCu NVARCHAR(50);
+        SELECT @TrangThaiCu = TrangThai 
+        FROM HopDong 
+        WHERE HopDongID = @HopDongID;
+
+        IF @TrangThaiCu IN (N'Đã thanh toán', N'Đã thanh lý tài sản')
+            THROW 50023, N'Lỗi: Hợp đồng đã kết thúc hoặc bị thanh lý. Cấm gia hạn!', 1;
+
+        IF @Deadline1_Moi >= @Deadline2_Moi
+            THROW 50020, N'Lỗi: Deadline 2 mới phải lớn hơn Deadline 1 mới.', 1;
+
+        -- [BƯỚC 2]: TÍNH CÔNG NỢ HIỆN TẠI
+        DECLARE @GocHienTai DECIMAL(18,0), @TongLai DECIMAL(18,0);
+        
+        SELECT @GocHienTai = DuNoGoc, @TongLai = TongLai
+        FROM fn_CalcMoneyContract(@HopDongID, GETDATE());
+
+        IF @SoTienKhachTra < @TongLai
+            THROW 50021, N'Lỗi: Khách hàng phải thanh toán tối thiểu toàn bộ số tiền lãi hiện tại.', 1;
+
+        DECLARE @TienTruVaoGoc DECIMAL(18,0) = @SoTienKhachTra - @TongLai;
+        DECLARE @DuNoMoi DECIMAL(18,0) = @GocHienTai - @TienTruVaoGoc;
+
+        IF @DuNoMoi <= 0
+            THROW 50022, N'Lỗi: Tiền trả đã phủ kín gốc. Vui lòng dùng chức năng Trả Nợ.', 1;
+
+        -- [BƯỚC 3]: CẬP NHẬT GIAO DỊCH (TRANSACTION)
+        BEGIN TRANSACTION;
+
+        -- 3.1 Ghi Log giao dịch
+        INSERT INTO LichSuGiaoDich (HopDongID, NgayGiaoDich, SoTienTra, DuNoConLai, NhanVienID, LoaiGiaoDich, GhiChu)
+        VALUES (@HopDongID, GETDATE(), @SoTienKhachTra, @DuNoMoi, @NhanVienID, N'Gia hạn', @GhiChu);
+
+        -- 3.2 Cập nhật Deadline và Reset Trạng thái Hợp đồng
+        UPDATE HopDong
+        SET Deadline1 = @Deadline1_Moi,
+            Deadline2 = @Deadline2_Moi,
+            TrangThai = N'Đang vay', 
+            UpdatedAt = GETDATE()
+        WHERE HopDongID = @HopDongID;
+
+        -- 3.3 "Cứu" Tài sản (Reset Status)
+        UPDATE TaiSan
+        SET TrangThai = N'Đang cầm cố'
+        WHERE HopDongID = @HopDongID 
+          AND TrangThai = N'Sẵn sàng thanh lý';
+
+        -- 3.4 Ghi Log thay đổi trạng thái
+        IF @TrangThaiCu <> N'Đang vay'
+        BEGIN
+            INSERT INTO LichSuTrangThai (HopDongID, TrangThaiCu, TrangThaiMoi, NhanVienID, GhiChu)
+            VALUES (@HopDongID, @TrangThaiCu, N'Đang vay', @NhanVienID, N'Reset trạng thái do gia hạn');
+        END
+
+        COMMIT TRANSACTION;
+        
+        SELECT N'Gia hạn thành công! Tài sản đã được khôi phục.' AS ThongBao, 
+               @DuNoMoi AS DuNoGocConLai;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END;
+GO
+```
+#  — Kịch bản Test Toàn diện Event 5
+
+Để test chạy mượt mà,  cần "du hành thời gian" bằng cách lùi `NgayVay` của hợp đồng test về đầu tháng (ví dụ: ngày 01/05/2026). Lúc này, hợp đồng đã tồn tại được khoảng 12 ngày, tiền lãi sẽ sinh ra > 0 và các lệnh Insert/Gia hạn sẽ thành công.
+
+Dưới đây là kịch bản test đã được tinh chỉnh hoàn chỉnh:
+
+## Script Test Toàn Diện Event 5
+
+```sql
+-- =========================================================================
+-- [BƯỚC CHUẨN BỊ]: TẠO NHANH 1 HỢP ĐỒNG TRỄ HẠN ĐỂ TEST
+-- =========================================================================
+DECLARE @TaiSanTest5 TaiSanTableType;
+
+INSERT INTO @TaiSanTest5 (TenTaiSan, MoTa, GiaTriDinhGia)
+VALUES (N'Đồng hồ Rolex Test', N'Bản Fake 1', 5000000);
+
+-- Cài đặt Deadline 1 là ngày 10/05/2026 (Trong quá khứ)
+EXEC sp_TaoHopDongMoi 
+    @HoTen = N'Khách Test Event 5', 
+    @SoDienThoai = '0900555666', 
+    @CCCD = '001122334455', 
+    @DiaChi = N'TNUT',
+    @SoTienVayGoc = 2000000, 
+    @Deadline1 = '2026-05-10', 
+    @Deadline2 = '2026-06-10', 
+    @GhiChu = N'Dữ liệu mồi test Event 5', 
+    @NhanVienID = 1,
+    @DanhSachTaiSan = @TaiSanTest5;
+
+DECLARE @HD_Test INT = (SELECT MAX(HopDongID) FROM HopDong);
+
+-- FIX DỮ LIỆU: Lùi Ngày Vay về ngày 01/05/2026 để hợp đồng sinh ra tiền lãi > 0
+UPDATE HopDong 
+SET NgayVay = '2026-05-01' 
+WHERE HopDongID = @HD_Test;
+
+SELECT N'TRƯỚC KHI QUÉT' AS GiaiDoan, TrangThai AS TrangThaiHopDong 
+FROM HopDong 
+WHERE HopDongID = @HD_Test;
+
+-- =========================================================================
+-- [TEST 1]: KIỂM TRA JOB QUÉT TỰ ĐỘNG (EVENT 5.1)
+-- =========================================================================
+EXEC sp_QuetTrangThaiNgayMoi;
+
+SELECT N'SAU KHI QUÉT' AS GiaiDoan, TrangThai AS TrangThaiHopDong 
+FROM HopDong 
+WHERE HopDongID = @HD_Test;
+
+-- =========================================================================
+-- [TEST 2]: KIỂM TRA CHỨC NĂNG GIA HẠN
+-- =========================================================================
+-- Lúc này, do NgayVay là 01/05, tiền lãi sẽ được tính cho ~12 ngày (chắc chắn > 0)
+DECLARE @TienLaiPhaiNop DECIMAL(18,0) = (
+    SELECT TongLai 
+    FROM fn_CalcMoneyContract(@HD_Test, GETDATE())
+);
+
+EXEC sp_GiaHanHopDong 
+    @HopDongID = @HD_Test, 
+    @SoTienKhachTra = @TienLaiPhaiNop, 
+    @Deadline1_Moi = '2026-06-12', 
+    @Deadline2_Moi = '2026-07-12', 
+    @NhanVienID = 1, 
+    @GhiChu = N'Khách đóng lãi xin gia hạn';
+
+SELECT N'SAU KHI GIA HẠN' AS GiaiDoan, 
+       TrangThai AS TrangThaiHopDong, 
+       Deadline1, 
+       Deadline2 
+FROM HopDong 
+WHERE HopDongID = @HD_Test;
+
+-- =========================================================================
+-- [TEST 3]: KIỂM TRA TRIGGER THANH LÝ (EVENT 5.2)
+-- =========================================================================
+UPDATE HopDong 
+SET TrangThai = N'Đã thanh lý tài sản' 
+WHERE HopDongID = @HD_Test;
+
+SELECT N'KIỂM TRA TRIGGER TÀI SẢN' AS GiaiDoan, 
+       TenTaiSan, 
+       TrangThai AS TrangThaiTaiSan 
+FROM TaiSan 
+WHERE HopDongID = @HD_Test;
+```
+---
+<img width="1911" height="1069" alt="Screenshot 2026-05-12 011111" src="https://github.com/user-attachments/assets/6c8c3244-4ead-4a9a-be89-12df2604b11c" />
+
+---
+# Kết quả mong đợi sau khi chạy kịch bản
+
+ Bảng 1 & 2 (Khởi tạo)
+
+Hợp đồng số **7** được tạo thành công với trạng thái ban đầu là **Đang vay**.
+
+Việc lùi ngày vay về **01/05/2026** đã giải quyết triệt để lỗi logic về dòng tiền (lãi phát sinh).
+
+Bảng 3 & 4 (Event 5.1 - Quét tự động)
+
+Stored Procedure `sp_QuetTrangThaiNgayMoi` đã phát hiện hợp đồng trễ hạn (Deadline 1 là **10/05**) và tự động chuyển trạng thái sang **Quá hạn** (nợ xấu).
+
+ Bảng 5 & 6 (Sự kiện Gia hạn)
+
+Khách hàng nộp đủ tiền lãi → Hệ thống báo **"Gia hạn thành công!"**.
+
+Hợp đồng được reset về trạng thái **Đang vay**, đồng thời dời Deadline sang tháng 6 và tháng 7.
+
+ Bảng 7 (Event 5.2 - Trigger Thanh lý)
+
+Khi cập nhật hợp đồng sang trạng thái **"Đã thanh lý tài sản"**, Trigger `trg_HopDong_ThanhLy` tự động chuyển chiếc **Đồng hồ Rolex Test** sang trạng thái **Đã bán thanh lý**.
+
+---
+
+**Kết luận**: Toàn bộ luồng **Event 5** (Tự động hóa trạng thái + Gia hạn + Trigger) đã hoạt động chính xác, không có lỗi logic nào.
+
+
+*Sinh viên thực hiện —Hoàng Trường Phúc- Lớp 59KMT*
