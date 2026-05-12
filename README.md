@@ -6,11 +6,7 @@ Pawnshop management database using SQL Server and T-SQL
 
 ---
 
-## 📋 Mục lục
-
-
-
----
+## Phần 1. Thiết kế cơ sở dữ liệu
 
 ## 1. Mô tả bài toán & Giả định hệ thống
 
@@ -37,48 +33,8 @@ Hệ thống quản lý **cửa hàng cầm đồ**, bao gồm:
 
 ## 2. Thiết kế ERD
 
-### Sơ đồ quan hệ (6 bảng sau khi nâng cấp)
-
-```
-┌─────────────┐        ┌──────────────────────┐        ┌──────────────┐
-│  KhachHang  │ 1    * │       HopDong        │ 1    * │   TaiSan     │
-│─────────────│────────│──────────────────────│────────│──────────────│
-│ KhachHangID │        │ HopDongID       (PK) │        │ TaiSanID(PK) │
-│ HoTen       │        │ KhachHangID     (FK) │        │ HopDongID(FK)│
-│ SoDienThoai │        │ NgayVay              │        │ TenTaiSan    │
-│ CCCD        │        │ SoTienVayGoc         │        │ MoTa         │
-│ DiaChi      │        │ Deadline1            │        │ GiaTriDinhGia│
-│ NgayTao     │        │ Deadline2            │        │ TrangThai    │
-└─────────────┘        │ TrangThai            │        └──────────────┘
-                       └──────────┬───────────┘
-                                  │ 1
-                        ┌─────────┴──────────┐
-                        │                    │
-                        │ *                  │ *
-           ┌────────────┴───────┐  ┌─────────┴──────────────┐
-           │  LichSuGiaoDich    │  │  LichSuTrangThai        │
-           │────────────────────│  │─────────────────────────│
-           │ GiaoDichID    (PK) │  │ LogID             (PK)  │
-           │ HopDongID     (FK) │  │ HopDongID         (FK)  │
-           │ NgayGiaoDich       │  │ TrangThaiCu              │
-           │ SoTienTra          │  │ TrangThaiMoi             │
-           │ DuNoConLai         │  │ ThoiGianThayDoi          │
-           │ NhanVienID    (FK)─┼──┼─NhanVienID        (FK)  │
-           │ LoaiGiaoDich       │  │ GhiChu                   │
-           └────────────────────┘  └─────────────────────────┘
-                        │
-                        └───────── FK trỏ về ──────────┐
-                                                        ▼
-                                              ┌──────────────────┐
-                                              │    NhanVien      │
-                                              │──────────────────│
-                                              │ NhanVienID  (PK) │
-                                              │ HoTen            │
-                                              │ TaiKhoan         │
-                                              │ NgayTao          │
-                                              └──────────────────┘
-```
-
+### Sơ đồ quan hệ (6 bảng )
+<img width="938" height="651" alt="image" src="https://github.com/user-attachments/assets/2f96899a-c037-4412-883e-e310ee16ae03" />
 
 
 ### Mô tả quan hệ
@@ -268,41 +224,9 @@ CONSTRAINT FK_GiaoDich_NhanVien
 
 ### Quy trình vòng đời hợp đồng
 
-```
-[Tạo hợp đồng]
-      │
-      ▼
- ┌─────────┐
- │Đang vay │ ← Lãi đơn: 0.5%/ngày trên gốc
- └────┬────┘
-      │
-      ├── Khách trả một phần ──→ [Đang trả góp] ──→ trả hết ──→ [Đã thanh toán] ✅
-      │
-      │ (vượt Deadline1, chưa trả đủ) ← Trigger tự động
-      ▼
- ┌──────────────────┐
- │Quá hạn (nợ xấu) │ ← Lãi phạt: 0.5%/ngày trên (Gốc + Lãi đơn tích lũy)
- └────────┬─────────┘
-          │
-          ├── Khách đến trả đủ ──→ [Đã thanh toán] ✅
-          │
-          │ (vượt Deadline2) ← Trigger tự động
-          ▼
-   Tài sản → [Sẵn sàng thanh lý]
-          │
-          │ (bán xong)
-          ▼
-   [Đã thanh lý tài sản] — Tài sản → [Đã bán thanh lý]
-```
+---
+<img width="1436" height="1434" alt="mermaid-diagram (11)" src="https://github.com/user-attachments/assets/319266d0-b88a-4254-abb3-f3faf7f12fa0" />
 
-### Quy tắc trả hàng
-
-```
-Điều kiện được lấy lại tài sản X:
-
-  SUM(GiaTriDinhGia của tài sản 'Đang cầm cố' còn lại, SAU KHI bỏ X ra)
-  >= DuNoHienTai (gốc + lãi tính đến hôm nay)
-```
 
 ---
 
