@@ -1367,6 +1367,51 @@ GO
 ```
 
 3. Event 5.2 — Tự động hóa theo Dữ liệu (Trigger Thanh lý)
+ Trigger 1: Tự động chuyển nợ xấu khi quá Deadline 1
+```SQL
+CREATE TRIGGER trg_1_QuaHanNoXau
+ON HopDong
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Chống lặp vô tận (Tránh trường hợp Trigger tự kích hoạt chính nó)
+    IF TRIGGER_NESTLEVEL() > 1 RETURN;
+
+    -- Tự động chuyển Hợp đồng sang Nợ xấu nếu hôm nay đã lố Deadline 1
+    UPDATE HopDong
+    SET TrangThai = N'Quá hạn (nợ xấu)', UpdatedAt = GETDATE()
+    WHERE HopDongID IN (SELECT HopDongID FROM inserted)
+      AND TrangThai = N'Đang vay'
+      AND Deadline1 < CAST(GETDATE() AS DATE);
+END;
+GO
+```
+2. Trigger 2: Tự động chuyển tài sản thành "Sẵn sàng thanh lý" khi quá Deadline 2
+```SQL
+CREATE TRIGGER trg_2_SanSangThanhLy
+ON HopDong
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    IF TRIGGER_NESTLEVEL() > 1 RETURN;
+
+    -- Tự động đổi trạng thái Tài sản nếu Hợp đồng đã lố Deadline 2
+    UPDATE TaiSan
+    SET TrangThai = N'Sẵn sàng thanh lý'
+    WHERE TrangThai = N'Đang cầm cố'
+      AND HopDongID IN (
+          SELECT HopDongID FROM inserted 
+          WHERE TrangThai = N'Quá hạn (nợ xấu)' 
+            AND Deadline2 < CAST(GETDATE() AS DATE)
+      );
+END;
+GO
+```
+
 Trigger này sẽ tự động cập nhật trạng thái tài sản khi nhân viên chuyển hợp đồng sang trạng thái "Đã thanh lý tài sản".
 
 ---
